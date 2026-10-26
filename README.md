@@ -45,7 +45,7 @@ or calculates in code, and the agent answers only from what the tool returns.
   | Table | CSV file | What it holds | Rows |
   |---|---|---|---|
   | [`bnb_info`] | [`bnb_info.csv`] | [topics such as check-in time, address, parking] | [10] |
-  | [`rooms`] | [`rooms.csv`] | [room types, prices, availability, description] | [6] |
+  | [`rooms`] | [`rooms.csv`] | [room types, prices, availability, description] | [16] |
 
 - **Tools:**
 
