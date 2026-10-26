@@ -16,7 +16,7 @@ This AI customer service assistant is designed for White Dolphin B&B. It serves 
 > Course homework: Unit G, My AI Customer Service Agent, with a Database and Tools
 > Student: F1152345 Yuki Wu
 
-![Main screen of my agent, with the tool trace](images/screenshot-main.png)
+![Main screen of my agent, with the tool trace](images/mainscreen.png)
 
 ## Who It Serves and When They Use It
 
@@ -45,7 +45,7 @@ or calculates in code, and the agent answers only from what the tool returns.
   | Table | CSV file | What it holds | Rows |
   |---|---|---|---|
   | [`bnb_info`] | [`bnb_info.csv`] | [topics such as check-in time, address, parking] | [10] |
-  | [`rooms`] | [`rooms.csv`] | [room types, prices, availability, description] | [5] |
+  | [`rooms`] | [`rooms.csv`] | [room types, prices, availability, description] | [6] |
 
 - **Tools:**
 
@@ -58,9 +58,9 @@ or calculates in code, and the agent answers only from what the tool returns.
 
 ## Sample Conversations
 
-![A question that uses the calculation tool](images/screenshot-1.png)
+![A question that uses the calculation tool](images/conversation-1.png)
 
-![A question the data does not cover](images/screenshot-2.png)
+![A question the data does not cover](images/screenshot-3.png)
 
 ## Project Files
 
