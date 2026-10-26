@@ -60,7 +60,7 @@ or calculates in code, and the agent answers only from what the tool returns.
 
 ![A question that uses the calculation tool](images/conversation-1.png)
 
-![A question the data does not cover](images/screenshot-3.png)
+![A question the data does not cover](images/conversation-3.png)
 
 ## Project Files
 
