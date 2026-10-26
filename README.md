@@ -9,7 +9,7 @@
   4. Put your screenshots in a folder named images/ in your project, and check that they show on GitHub.
 -->
 
-# White Dolphin B&B Assistant: Answers Questions About Rooms, Prices and Check-In
+# Lunar B&B Assistant: Answers Questions About Rooms, Prices and Check-In
 
 This AI customer service assistant is designed for White Dolphin B&B. It serves potential and existing guests who want to book a room, check availability, or ask about rules. It solves the problem of delayed manual replies by providing instant, 24/7 answers and accurate price calculations.
 
