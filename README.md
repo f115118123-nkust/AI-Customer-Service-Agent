@@ -58,9 +58,9 @@ or calculates in code, and the agent answers only from what the tool returns.
 
 ## Sample Conversations
 
-![A question that uses the calculation tool](images/conversation-1.png)
+![A question that uses the calculation tool](Week7/images/conversation-1.png)
 
-![A question the data does not cover](images/conversation-3.png)
+![A question the data does not cover](Week7/images/conversation-3.png)
 
 ## Project Files
 
