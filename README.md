@@ -16,7 +16,7 @@ This AI customer service assistant is designed for White Dolphin B&B. It serves 
 > Course homework: Unit G, My AI Customer Service Agent, with a Database and Tools
 > Student: F1152345 Yuki Wu
 
-![Main screen of my agent, with the tool trace](images/mainscreen.png)
+![Main screen of my agent, with the tool trace](Week7/images/mainscreen.png)
 
 ## Who It Serves and When They Use It
 
