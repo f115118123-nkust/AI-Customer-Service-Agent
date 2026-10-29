@@ -73,7 +73,8 @@ Week7/
 ├── requirements.txt    # the Python packages to install
 ├── .env.example        # a sample settings file (no real key)
 ├── .gitignore          # files git must not upload: .env and *.db
-├── images/             # screenshots for this README
+├── images/             # screenshots for this project
+├── rules.md            #House Rules and Guest Guidelines for lunar B&B 
 └── README.md           # this file
 
 ## How to Install and Run It
