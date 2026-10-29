@@ -1,13 +1,15 @@
 import os
 import csv
+import json
+import re
 import sqlite3
 from dotenv import load_dotenv
 from openai import OpenAI
+import gradio as gr
 
-print("有沒有 .env 檔案？", os.path.exists(".env"))
-print("目前的執行路徑：", os.getcwd())
-
+# ----------------------------------------------------------------------
 # 1. 讀取環境變數與 API 設定
+# ----------------------------------------------------------------------
 load_dotenv()
 client = OpenAI(
     api_key=os.getenv("API_KEY"),
@@ -15,18 +17,17 @@ client = OpenAI(
     timeout=60.0
 )
 ai_model = os.getenv("MODEL_NAME")
-print(f"準備就緒，使用的模型是: {ai_model}")
 
-# 2. 建立並初始化 SQLite 資料庫
+# ----------------------------------------------------------------------
+# 2. 初始化 SQLite 資料庫 (rooms.csv & bnb_info.csv)
+# ----------------------------------------------------------------------
 connection = sqlite3.connect("bnb.db", check_same_thread=False)
 connection.row_factory = sqlite3.Row
 cursor = connection.cursor()
 
-# 建立資訊表
 cursor.execute("DROP TABLE IF EXISTS bnb_info")
 cursor.execute("CREATE TABLE bnb_info (topic TEXT PRIMARY KEY, content TEXT NOT NULL)")
 
-# 建立紀錄表 (房型資料)
 cursor.execute("DROP TABLE IF EXISTS rooms")
 cursor.execute("""
 CREATE TABLE rooms (
@@ -39,7 +40,6 @@ CREATE TABLE rooms (
 )
 """)
 
-# 從 CSV 讀取資料並寫入資料庫
 with open("bnb_info.csv", newline="", encoding="utf-8") as f:
     cursor.executemany(
         "INSERT INTO bnb_info VALUES (?, ?)",
@@ -55,22 +55,46 @@ with open("rooms.csv", newline="", encoding="utf-8") as f:
     )
 connection.commit()
 
-# 準備供後續工具使用的清單
 BNB_TOPICS = [r["topic"] for r in cursor.execute("SELECT topic FROM bnb_info")]
 
-print("資料庫 bnb.db 建立完成！")
 # ----------------------------------------------------------------------
-# 3. 定義 4 個核心工具函式
+# 3. 載入 RAG 文件 (rules.md)
 # ----------------------------------------------------------------------
+RULES_FILE = "rules.md"
+RULES_LIST = []
+if os.path.exists(RULES_FILE):
+    with open(RULES_FILE, "r", encoding="utf-8") as f:
+        RULES_LIST = [line.strip() for line in f.readlines() if line.strip() and not line.startswith("#")]
 
-def get_bnb_info(topic):
+# ----------------------------------------------------------------------
+# 4. 定義核心工具函式 (Tool Calling + RAG)
+# ----------------------------------------------------------------------
+def search_rules(query: str):
+    """【RAG 工具】檢索白海民宿的詳細住宿守則、禁菸罰額、延遲退房費、潛水裝備等規定"""
+    if not RULES_LIST:
+        return {"found": False, "message": "目前未載入詳細住宿守則。"}
+    
+    # 簡易關鍵字相似度比對 (RAG 檢索)
+    keywords = [k for k in re.split(r"\s+|，|。|？|\?", query) if k]
+    matched = []
+    for rule in RULES_LIST:
+        score = sum(1 for kw in keywords if kw in rule)
+        if score > 0 or any(kw in query for kw in ["菸", "延遲", "退房", "毛巾", "寵物", "潛水", "吵", "安寧", "環保", "洗腳"]):
+            matched.append(rule)
+    
+    if not matched:
+        matched = RULES_LIST  # 全量參考
+        
+    return {"found": True, "relevant_rules": matched[:5]}
+
+def get_bnb_info(topic: str):
     """查詢民宿基本資訊（如入住時間、地址、停車等）"""
     row = cursor.execute("SELECT content FROM bnb_info WHERE topic = ?", (topic,)).fetchone()
     if row is None:
         return {"found": False, "topics_available": BNB_TOPICS}
     return {"found": True, "topic": topic, "content": row["content"]}
 
-def search_rooms(keyword):
+def search_rooms(keyword: str):
     """搜尋房型名稱、價格與供應狀態"""
     like = f"%{keyword.strip()}%"
     rows = cursor.execute(
@@ -89,15 +113,14 @@ def search_rooms(keyword):
         } for r in rows]
     }
 
-def calculate_stay(room_name, nights):
+def calculate_stay(room_name: str, nights: int):
     """計算特定房型的總住宿費用，由程式處理數學計算"""
     found = search_rooms(room_name)
     if not found["found"] or len(found["rooms"]) != 1:
-        return {"total": None, "note": f"無法精確鎖定單一房型 '{room_name}'，請確認房型名稱後重新試算。"}
+        return {"total": None, "note": f"無法精確鎖定單一房型 '{room_name}'，請確認房型名稱。"}
     
     room = found["rooms"][0]
     total = room["price"] * nights
-    
     return {
         "room_name": room["name"],
         "price_per_night": room["price"],
@@ -107,64 +130,69 @@ def calculate_stay(room_name, nights):
     }
 
 def transfer_to_human():
-    """遇到客訴或資料庫查不到的問題時轉接真人"""
+    """遇到客訴或無法回答的問題時轉接真人"""
     return {
         "message": "請直接撥打民宿服務專線 0912-345-678，將有專人為您服務。",
-        "note": "轉接指示已完成。請先用一句話向客人說明原因，再提供聯絡資訊，切勿重複呼叫此工具。"
+        "note": "轉接指示已完成。請先以一句話說明原因並提供電話。"
     }
 
-# ----------------------------------------------------------------------
-# 4. 配置 Agent 角色、規則與工具規格 (JSON Schema)
-# ----------------------------------------------------------------------
-ROLE = "你是白海民宿的 AI 客服助理。所有價格均為新台幣。請以親切、專業的口吻回答顧客。"
-
-RULES = [
-    "只能根據工具呼叫傳回的結果來回答顧客。絕不憑記憶回答，也絕不編造任何資訊。",
-    "如果工具查不到結果，請誠實告知顧客，不要進行猜測。",
-    "只回答與白海民宿相關的問題。若顧客詢問其他無關話題，請禮貌婉拒。",
-    "回答請保持簡短，盡量控制在三句話以內。",
-    "詢問民宿基本規定（如入住時間、地址、停車、早餐）-> 使用 get_bnb_info。",
-    "查詢房型名稱、房價、介紹或是否有空房 -> 使用 search_rooms。",
-    "計算住宿總金額（入住幾晚）-> 必須使用 calculate_stay，絕不可以自己心算。",
-    "遇到客訴、要求經理/真人服務，或任何工具無法回答的問題 -> 使用 transfer_to_human。"
-]
-
 TOOL_FUNCTIONS = {
+    "search_rules": search_rules,
     "get_bnb_info": get_bnb_info,
     "search_rooms": search_rooms,
     "calculate_stay": calculate_stay,
     "transfer_to_human": transfer_to_human
 }
 
-# 讓模型看懂工具怎麼用的說明書
 TOOL_SPECS = [
-    {"type": "function", "function": {"name": "get_bnb_info", "description": "查詢民宿的設施與規定", "parameters": {"type": "object", "properties": {"topic": {"type": "string", "enum": BNB_TOPICS}}, "required": ["topic"]}}},
-    {"type": "function", "function": {"name": "search_rooms", "description": "搜尋房型資訊、價格與預訂狀態", "parameters": {"type": "object", "properties": {"keyword": {"type": "string", "description": "搜尋關鍵字"}}, "required": ["keyword"]}}},
-    {"type": "function", "function": {"name": "calculate_stay", "description": "【強制規定】只要顧客問到任何住宿總金額、住幾晚的費用、或者包含加床費用的計算，『絕對禁止』自行心算或僅用 search_rooms，必須立刻且強制呼叫此工具進行計算！", "parameters": {"type": "object", "properties": {"room_name": {"type": "string"}, "nights": {"type": "integer"}}, "required": ["room_name", "nights"]}}},
-    {"type": "function", "function": {"name": "transfer_to_human", "description": "當顧客提出客訴、要求真人客服或遇到無法解答的問題時使用。", "parameters": {"type": "object", "properties": {}, "required": []}}}
+    {"type": "function", "function": {"name": "search_rules", "description": "【RAG 工具】檢索民宿詳細規範（如吸菸罰款、逾時退房費、毛巾換洗費、潛水裝備存放、寵物政策、夜間安寧等）", "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "顧客詢問的規章關鍵字"}}, "required": ["query"]}}},
+    {"type": "function", "function": {"name": "get_bnb_info", "description": "查詢民宿基本資訊（ Check-in 時間、地址、停車、早餐、退訂條款）", "parameters": {"type": "object", "properties": {"topic": {"type": "string", "enum": BNB_TOPICS}}, "required": ["topic"]}}},
+    {"type": "function", "function": {"name": "search_rooms", "description": "搜尋房型名稱、房價、容納人數與空房狀態", "parameters": {"type": "object", "properties": {"keyword": {"type": "string"}}, "required": ["keyword"]}}},
+    {"type": "function", "function": {"name": "calculate_stay", "description": "計算住宿總金額（入住幾晚之費用）。強制禁止自行心算！", "parameters": {"type": "object", "properties": {"room_name": {"type": "string"}, "nights": {"type": "integer"}}, "required": ["room_name", "nights"]}}},
+    {"type": "function", "function": {"name": "transfer_to_human", "description": "遇到客訴、要求真人客服或任何系統資料庫無載明之特殊狀況時使用。", "parameters": {"type": "object", "properties": {}, "required": []}}}
 ]
 
-print("工具與規則設定完成！")
-import json
-import time
-import re
+# ----------------------------------------------------------------------
+# 5. 五段式 System Prompt 結構
+# ----------------------------------------------------------------------
+SYSTEM_PROMPT = """
+【角色與目標 Role & Goal】
+你是小琉球「白海民宿 (lunar B&B)」的 AI 客服助理。你的目標是提供親切、準確且專業的諮詢，解答關於房型、價格、設施及入住守則等問題。所有價格均為新台幣 (NT$)。
+
+【服務範疇 Scope】
+1. 查詢房型資訊、價格、空房狀態及算房價總額。
+2. 查詢民宿基礎設施（Check-in時間、地址、停車位、早餐、退訂規則）。
+3. 查詢白海民宿的入住守則（包含超時退房費、吸菸罰鍰、寵物規定、環保備品、潛水裝備規範等）。
+4. 處理客訴與真人轉接。
+
+【互動規則 Interaction Rules】
+1. 嚴格基於工具 (Tool) 傳回之資料進行回答。絕不憑記憶回答，絕不捏造或臆測數據。
+2. 只要計算費用，必須且強制呼叫 calculate_stay 工具，禁止自行心算。
+3. 只要詢問具體入住規範（如吸菸、退房加收費用、寵物、潛水等），請呼叫 search_rules 進行 RAG 檢索。
+4. 回答請維持簡短親切，控制在 3 句內。
+
+【拒絕與特殊狀況 Refusals & Special Cases】
+1. 當問題超出「白海民宿」服務範疇（例如詢問天氣、小琉球景點推薦、外縣市飯店）時，必須固定回覆：「抱歉，我只能回答與白海民宿相關的訂房與入住資訊喔！」
+2. 當工具搜尋無結果或資料庫查無紀錄時，請誠實告知找不到，絕不瞎編，並引導撥打專線 0912-345-678。
+3. 若遇到客訴或要求找經理/真人服務，請呼叫 transfer_to_human。
+
+【開場白 Opening Line】
+您好！我是白海民宿的 AI 客服小幫手 🐬 請問今天想了解房型、預約試算還是查詢入住守則呢？
+"""
 
 # ----------------------------------------------------------------------
-# 5. Agent 核心驅動迴圈 (Agent Loop)
+# 6. Agent 核心驅動迴圈
 # ----------------------------------------------------------------------
-def run_agent(question, max_steps=6):
-    """執行對話迴圈，處理 Tool Calling 並回傳 (最終回答, 工具呼叫軌跡)"""
-    system_prompt = ROLE + "\n\nRULES\n" + "\n".join(f"{i}. {r}" for i, r in enumerate(RULES, 1))
-    # 根據輸入是否包含中文決定回覆語言
+def run_agent(question: str, history=None, max_steps=6):
     language = "Traditional Chinese" if re.search(r"[\u4e00-\u9fff]", question) else "English"
-    
     messages = [
-        {"role": "system", "content": system_prompt},
+        {"role": "system", "content": SYSTEM_PROMPT.strip()},
         {"role": "system", "content": f"Reply in {language}."},
         {"role": "user", "content": question}
     ]
-    tools = {"tools": TOOL_SPECS} if TOOL_SPECS else {}
+    
     trace = []
+    tools = {"tools": TOOL_SPECS} if TOOL_SPECS else {}
 
     for step in range(max_steps):
         response = client.chat.completions.create(
@@ -172,11 +200,9 @@ def run_agent(question, max_steps=6):
         )
         message = response.choices[0].message
 
-        # 若模型沒有要求呼叫工具，代表它已經準備好最終回答了
         if not message.tool_calls:
             return (message.content or "").strip(), trace
 
-        # 若模型要求呼叫工具，將請求記錄到對話中
         messages.append({
             "role": "assistant",
             "content": message.content or "",
@@ -189,7 +215,6 @@ def run_agent(question, max_steps=6):
             ]
         })
 
-        # 逐一執行模型請求的工具
         for call in message.tool_calls:
             args = json.loads(call.function.arguments or "{}")
             tool_name = call.function.name
@@ -200,28 +225,22 @@ def run_agent(question, max_steps=6):
                 result = {"error": f"Tool {tool_name} not found."}
 
             trace.append({"tool": tool_name, "arguments": args, "result": result})
-            # 將工具執行的結果傳回給模型
             messages.append({
                 "role": "tool",
                 "tool_call_id": call.id,
                 "content": json.dumps(result, ensure_ascii=False)
             })
 
-    return "抱歉，目前系統忙碌中。請撥打專線 0912-345-678 聯繫客服人員。", trace
-
-import gradio as gr
+    return "抱歉，目前系統忙碌中。請撥打專線 0912-345-678 聯繫專人服務。", trace
 
 # ----------------------------------------------------------------------
-# 6. 建立 Gradio 網頁對話介面
+# 7. Gradio UI 介面
 # ----------------------------------------------------------------------
 def respond(message, chat_history):
     answer, trace = run_agent(message)
-    
-    # 完全依照錯誤訊息的要求，改用帶有 role 與 content 的字典格式
     chat_history.append({"role": "user", "content": message})
     chat_history.append({"role": "assistant", "content": answer})
     
-    # 整理右側的工具軌跡顯示
     trace_text = ""
     for t in trace:
         trace_text += f"🔧 工具: {t['tool']}\n"
@@ -235,34 +254,33 @@ def respond(message, chat_history):
     return "", chat_history, trace_text
 
 with gr.Blocks(title="白海民宿 AI 客服") as demo:
-    gr.Markdown("# 🐬 白海民宿 AI 客服 (lunar B&B)")
-    gr.Markdown("您可以詢問訂房資訊、設施、價格，或試算住宿費用。")
+    gr.Markdown("# 🐬 小琉球白海民宿 (lunar B&B) AI 客服")
+    gr.Markdown("歡迎詢問房型價格、空房試算、入住規範與民宿設施！")
     
     with gr.Row():
-        # 左側：對話區塊 (維持最簡化，不加 type 參數)
         with gr.Column(scale=2):
-            chatbot = gr.Chatbot(label="客服對話", height=500)
-            msg = gr.Textbox(label="請輸入您的問題", placeholder="例如：請問幾點可以 Check-in？")
+            chatbot = gr.Chatbot(
+                label="客服對話", 
+                height=480,
+                value=[{"role": "assistant", "content": "您好！我是白海民宿的 AI 客服小幫手 🐬 請問今天想了解房型、預約試算還是查詢入住守則呢？"}]
+            )
+            msg = gr.Textbox(label="請輸入您的問題", placeholder="例如：逾時退房怎麼算費用？或者 房間可以吸菸嗎？")
             clear = gr.ClearButton([msg, chatbot])
             
-        # 右側：工具軌跡區塊
         with gr.Column(scale=1):
-            trace_box = gr.Textbox(label="Tools used (工具軌跡)", lines=22, interactive=False)
+            trace_box = gr.Textbox(label="Tools Used (工具與 RAG 軌跡)", lines=22, interactive=False)
             
-    # 設定按下 Enter 的動作
     msg.submit(respond, [msg, chatbot], [msg, chatbot, trace_box])
     
-    # 設定範例問題
     gr.Examples(
         examples=[
-            "請問幾點可以 Check-in？附近好停車嗎？",
-            "海藍雙人房一晚多少錢？",
-            "兩個人住海藍雙人房 3 晚總共多少錢？",
-            "房間有小蟲，我要找經理！"
+            "請問海藍雙人房住 3 晚總共多少錢？",
+            "房間裡面可以抽菸嗎？如果抽菸會怎樣？",
+            "我們潛水回來的裝備可以放房間裡面嗎？",
+            "請問明天高雄的天氣怎麼樣？"  # 防越獄/防範疇外測試範例
         ],
         inputs=msg
     )
 
 if __name__ == "__main__":
-    print("\n啟動 Gradio 網頁介面...")
     demo.launch(share=False)
